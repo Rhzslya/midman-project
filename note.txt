@@ -1,0 +1,1 @@
+cargo watch -q -c -w crates/backend/src/ -x 'run -p backend'

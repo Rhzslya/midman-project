@@ -1,27 +1,40 @@
 mod db;
 mod handlers;
+mod model;
 
 use axum::{
     routing::{get, post},
     serve, Router,
 };
 
+use sqlx::{Pool, Postgres};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 
 use handlers::room::create_room;
 
+use crate::handlers::user::register_user;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: Pool<Postgres>,
+}
+
 #[tokio::main]
 async fn main() {
     let cors = CorsLayer::permissive();
 
-    db::get_pool().await.expect("Database connection failed!");
+    let pool = db::get_pool().await.expect("Database connection failed!");
     println!("Database connection success!");
+
+    let state = AppState { pool };
 
     let app = Router::new()
         .route("/", get(|| async { "Midman Server is running" }))
         .route("/room/create", post(create_room))
-        .layer(cors);
+        .route("/auth/register", post(register_user))
+        .layer(cors)
+        .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:3000").await.unwrap();
     println!("Listening on http://127.0.0.1:3000");
