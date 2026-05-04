@@ -19,6 +19,8 @@ pub struct RegisterRequest {
         custom(function = "validate_strong_password")
     )]
     pub password: String,
+    #[validate(length(min = 3, message = "Nama lengkap harus diisi dengan benar"))]
+    pub full_name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

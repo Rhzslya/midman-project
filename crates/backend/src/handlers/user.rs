@@ -45,13 +45,15 @@ pub async fn register_user(
         )
     })?;
 
-    let insert_result =
-        sqlx::query("INSERT INTO users (username, email, password) VALUES($1, $2, $3)")
-            .bind(payload.username)
-            .bind(payload.email)
-            .bind(hashed_password)
-            .execute(&state.pool)
-            .await;
+    let insert_result = sqlx::query(
+        "INSERT INTO users (username, email, password, full_name) VALUES($1, $2, $3, $4)",
+    )
+    .bind(payload.username)
+    .bind(payload.email)
+    .bind(hashed_password)
+    .bind(payload.full_name)
+    .execute(&state.pool)
+    .await;
 
     match insert_result {
         Ok(_) => {
@@ -70,8 +72,89 @@ pub async fn register_user(
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use axum::{extract::State, http::StatusCode, Json};
+    use sqlx::{postgres::PgPoolOptions, Error, Pool, Postgres};
+
+    use crate::{handlers::user::register_user, model::user::RegisterRequest, AppState};
+
     #[test]
     fn test() {
         println!("Hello World")
+    }
+
+    async fn get_test_pool() -> Result<Pool<Postgres>, Error> {
+        let url = "postgres://seira:RootPassword123@localhost:5432/midman-db";
+        PgPoolOptions::new()
+            .max_connections(10)
+            .min_connections(5)
+            .acquire_timeout(Duration::from_secs(5))
+            .idle_timeout(Duration::from_secs(60))
+            .connect(url)
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_register_user_success() {
+        let pool = get_test_pool().await.expect("Database connection failed!");
+        println!("Database connection success!");
+        let state = AppState { pool };
+
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        let payload = RegisterRequest {
+            username: format!("usr{}", time),
+            email: format!("testuser{}@test.com", time),
+            password: "Password123!".to_string(),
+            full_name: "Test User".to_string(),
+        };
+
+        let response = register_user(State(state), Json(payload)).await;
+
+        assert!(
+            response.is_ok(),
+            "Response must be OK, but got {:?}",
+            response
+        );
+
+        let (status, Json(body)) = response.unwrap();
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body.message, "User registered successfully!");
+    }
+
+    #[tokio::test]
+    async fn test_register_user_failure() {
+        let pool = get_test_pool().await.expect("Database connection failed!");
+        println!("Database connection success!");
+        let state = AppState { pool };
+
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        let payload = RegisterRequest {
+            username: format!("usr{}", time),
+            email: format!("testuser{}@test.com", time),
+            password: "weak".to_string(),
+            full_name: "Test User".to_string(),
+        };
+
+        let response = register_user(State(state), Json(payload)).await;
+
+        assert!(
+            response.is_err(),
+            "Response harusnya error karena password lemah!"
+        );
+
+        let (status, error_message) = response.unwrap_err();
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(error_message.contains("Password must contain"));
     }
 }
