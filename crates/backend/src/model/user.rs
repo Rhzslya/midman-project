@@ -1,5 +1,33 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use validator::{Validate, ValidationError};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct User {
+    pub id: i32,
+    pub full_name: String,
+    pub username: String,
+    pub email: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct UserRow {
+    pub id: i32,
+    pub full_name: String,
+    pub username: String,
+    pub email: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub password: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Claims {
+    pub sub: i32,
+    pub exp: usize,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub struct RegisterRequest {
@@ -22,17 +50,21 @@ pub struct RegisterRequest {
     #[validate(length(min = 3, message = "Nama lengkap harus diisi dengan benar"))]
     pub full_name: String,
 }
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RegisterResponse {
+    pub message: String,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LoginRequest {
-    pub email: String,
+    pub identifier: String, // username or email
     pub password: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AuthResponse {
+pub struct LoginResponse {
     pub token: String,
-    pub message: String,
+    pub user: User,
 }
 
 fn validate_username_chars(username: &str) -> Result<(), ValidationError> {

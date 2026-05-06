@@ -18,16 +18,21 @@ use crate::handlers::user::register_user;
 #[derive(Clone)]
 pub struct AppState {
     pub pool: Pool<Postgres>,
+    pub jwt_secret: String,
 }
 
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
+
     let cors = CorsLayer::permissive();
 
     let pool = db::get_pool().await.expect("Database connection failed!");
     println!("Database connection success!");
 
-    let state = AppState { pool };
+    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET Must be not empty");
+
+    let state = AppState { pool, jwt_secret };
 
     let app = Router::new()
         .route("/", get(|| async { "Midman Server is running" }))

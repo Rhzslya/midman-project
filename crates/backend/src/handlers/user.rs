@@ -1,15 +1,20 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use axum::{extract::State, http::StatusCode, Json};
-use bcrypt::{hash, DEFAULT_COST};
+use bcrypt::{hash, verify, DEFAULT_COST};
+use jsonwebtoken::{encode, EncodingKey, Header};
 use validator::Validate;
 
-use crate::model::user::{AuthResponse, RegisterRequest};
+use crate::model::user::{
+    Claims, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, User, UserRow,
+};
 
 use crate::AppState;
 
 pub async fn register_user(
     State(state): State<AppState>,
     Json(payload): Json<RegisterRequest>,
-) -> Result<(StatusCode, Json<AuthResponse>), (StatusCode, String)> {
+) -> Result<(StatusCode, Json<RegisterResponse>), (StatusCode, String)> {
     if let Err(errors) = payload.validate() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -57,8 +62,7 @@ pub async fn register_user(
 
     match insert_result {
         Ok(_) => {
-            let response = AuthResponse {
-                token: "TODO".to_string(),
+            let response = RegisterResponse {
                 message: "User registered successfully!".to_string(),
             };
             Ok((StatusCode::CREATED, Json(response)))
@@ -70,36 +74,101 @@ pub async fn register_user(
     }
 }
 
+pub async fn login_user(
+    State(state): State<AppState>,
+    Json(payload): Json<LoginRequest>,
+) -> Result<(StatusCode, Json<LoginResponse>), (StatusCode, String)> {
+    let db_user: Option<UserRow> = sqlx::query_as(
+        "SELECT id, full_name, username, email, created_at, updated_at, password FROM users WHERE email = $1 OR username = $1",
+    ).bind(&payload.identifier)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        eprintln!("DB Error : {:?}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "Database Error".to_string())
+    })?;
+
+    let user = match db_user {
+        Some(u) => u,
+        None => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "Email/Username or Password is Invalid".to_string(),
+            ))
+        }
+    };
+
+    let is_password_valid = verify(payload.password, &user.password).unwrap_or(false);
+
+    if !is_password_valid {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Email/Username or Password is Invalid".to_string(),
+        ));
+    }
+
+    let expiration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as usize
+        + (60 * 60 * 24);
+
+    let claims = Claims {
+        sub: user.id,
+        exp: expiration,
+    };
+
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
+    )
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed Create Token".to_string(),
+        )
+    })?;
+
+    let response = LoginResponse {
+        token,
+        user: User {
+            id: user.id,
+            full_name: user.full_name,
+            username: user.username,
+            email: user.email,
+            created_at: user.created_at,
+            updated_at: user.updated_at,
+        },
+    };
+
+    Ok((StatusCode::OK, Json(response)))
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use axum::{extract::State, http::StatusCode, Json};
-    use sqlx::{postgres::PgPoolOptions, Error, Pool, Postgres};
+    use sqlx::{pool, postgres::PgPoolOptions, Error, Pool, Postgres};
 
-    use crate::{handlers::user::register_user, model::user::RegisterRequest, AppState};
+    use crate::{
+        handlers::user::{login_user, register_user},
+        model::user::{LoginRequest, RegisterRequest},
+        AppState,
+    };
 
     #[test]
     fn test() {
         println!("Hello World")
     }
 
-    async fn get_test_pool() -> Result<Pool<Postgres>, Error> {
-        let url = "postgres://seira:RootPassword123@localhost:5432/midman-db";
-        PgPoolOptions::new()
-            .max_connections(10)
-            .min_connections(5)
-            .acquire_timeout(Duration::from_secs(5))
-            .idle_timeout(Duration::from_secs(60))
-            .connect(url)
-            .await
-    }
-
-    #[tokio::test]
-    async fn test_register_user_success() {
-        let pool = get_test_pool().await.expect("Database connection failed!");
-        println!("Database connection success!");
-        let state = AppState { pool };
+    #[sqlx::test]
+    async fn test_register_user_success(pool: sqlx::PgPool) {
+        let state = AppState {
+            pool,
+            jwt_secret: "SECRET_KEY".to_string(),
+        };
 
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -127,11 +196,12 @@ mod tests {
         assert_eq!(body.message, "User registered successfully!");
     }
 
-    #[tokio::test]
-    async fn test_register_user_failure() {
-        let pool = get_test_pool().await.expect("Database connection failed!");
-        println!("Database connection success!");
-        let state = AppState { pool };
+    #[sqlx::test]
+    async fn test_register_user_failure(pool: sqlx::PgPool) {
+        let state = AppState {
+            pool,
+            jwt_secret: "SECRET_KEY".to_string(),
+        };
 
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -149,12 +219,59 @@ mod tests {
 
         assert!(
             response.is_err(),
-            "Response harusnya error karena password lemah!"
+            "Response must be Err, because password is weak",
         );
 
         let (status, error_message) = response.unwrap_err();
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(error_message.contains("Password must contain"));
+    }
+
+    #[sqlx::test]
+    async fn test_login_user_success(pool: sqlx::PgPool) {
+        let state = AppState {
+            pool,
+            jwt_secret: "SECRET_KEY".to_string(),
+        };
+
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        let password = "SuperSecretPassword123!".to_string();
+        let email = format!("logintest{}@test.com", time);
+        let username = format!("logusr{}", time);
+
+        let reg_payload = RegisterRequest {
+            username: username.clone(),
+            email: email.clone(),
+            password: password.clone(),
+            full_name: "Login Tester".to_string(),
+        };
+        let _ = register_user(State(state.clone()), Json(reg_payload))
+            .await
+            .unwrap();
+
+        let login_payload = LoginRequest {
+            identifier: email,
+            password: password.clone(),
+        };
+
+        let response = login_user(State(state), Json(login_payload)).await;
+
+        assert!(
+            response.is_ok(),
+            "Login Must be Successful, but got {:?}",
+            response.err()
+        );
+
+        let (status, Json(body)) = response.unwrap();
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body.token.is_empty(), "Token must not be empty");
+        assert_eq!(body.user.username, username, "Username must be same");
+        assert_eq!(body.user.full_name, "Login Tester");
     }
 }
