@@ -1,6 +1,8 @@
 mod db;
 mod handlers;
+mod middleware;
 mod model;
+mod routes;
 
 use axum::{
     routing::{get, post},
@@ -13,7 +15,7 @@ use tower_http::cors::CorsLayer;
 
 use handlers::room::create_room;
 
-use crate::handlers::user::register_user;
+use crate::handlers::user::{get_my_profile, login_user, register_user};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -36,8 +38,8 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(|| async { "Midman Server is running" }))
-        .route("/room/create", post(create_room))
-        .route("/auth/register", post(register_user))
+        .nest("/api/v1", routes::create_router())
+        .route("/api/user/me", get(get_my_profile))
         .layer(cors)
         .with_state(state);
 

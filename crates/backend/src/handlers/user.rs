@@ -1,10 +1,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::response::IntoResponse;
 use axum::{extract::State, http::StatusCode, Json};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use validator::Validate;
 
+use crate::middleware::AuthUser;
 use crate::model::user::{
     Claims, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, User, UserRow,
 };
@@ -143,6 +145,15 @@ pub async fn login_user(
     };
 
     Ok((StatusCode::OK, Json(response)))
+}
+
+pub async fn get_my_profile(user: AuthUser) -> impl IntoResponse {
+    let pesan = format!(
+        "Selamat datang di area VIP! ID kamu adalah: {}",
+        user.user_id
+    );
+
+    (StatusCode::OK, pesan)
 }
 
 #[cfg(test)]
