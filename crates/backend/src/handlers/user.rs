@@ -158,13 +158,12 @@ pub async fn get_my_profile(user: AuthUser) -> impl IntoResponse {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use axum::{extract::State, http::StatusCode, Json};
-    use sqlx::{pool, postgres::PgPoolOptions, Error, Pool, Postgres};
 
     use crate::{
-        handlers::user::{login_user, register_user},
+        handlers::user::{get_my_profile, login_user, register_user},
         model::user::{LoginRequest, RegisterRequest},
         AppState,
     };
@@ -284,5 +283,68 @@ mod tests {
         assert!(!body.token.is_empty(), "Token must not be empty");
         assert_eq!(body.user.username, username, "Username must be same");
         assert_eq!(body.user.full_name, "Login Tester");
+    }
+
+    #[sqlx::test]
+    async fn test_get_my_profile(pool: sqlx::PgPool) {
+        let state = AppState {
+            pool,
+            jwt_secret: "SECRET_KEY".to_string(),
+        };
+
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        let password = "SuperSecretPassword123!".to_string();
+        let email = format!("logintest{}@test.com", time);
+        let username = format!("logusr{}", time);
+
+        let reg_payload = RegisterRequest {
+            username: username.clone(),
+            email: email.clone(),
+            password: password.clone(),
+            full_name: "Login Tester".to_string(),
+        };
+
+        let _ = register_user(State(state.clone()), Json(reg_payload))
+            .await
+            .unwrap();
+
+        let login_payload = LoginRequest {
+            identifier: email,
+            password: password.clone(),
+        };
+
+        let response = login_user(State(state.clone()), Json(login_payload))
+            .await
+            .unwrap();
+        let (_, Json(body)) = response;
+        let token = body.token;
+
+        use axum::{routing::get, Router};
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/api/user/me", get(get_my_profile))
+            .with_state(state);
+
+        let request = axum::http::Request::builder()
+            .uri("/api/user/me")
+            .header("Authorization", format!("Bearer {}", token))
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_text = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        assert!(body_text.contains("Selamat datang di area VIP!"));
     }
 }
