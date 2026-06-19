@@ -306,6 +306,7 @@ dependencies = [
  "shared",
  "sqlx",
  "tokio",
+ "tower",
  "tower-http",
  "validator",
 ]

@@ -1,9 +1,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::{extract::State, http::StatusCode, Json};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use jsonwebtoken::{encode, EncodingKey, Header};
+use serde_json::json;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
@@ -148,22 +150,69 @@ pub async fn login_user(
 }
 
 pub async fn get_my_profile(user: AuthUser) -> impl IntoResponse {
-    let pesan = format!(
-        "Selamat datang di area VIP! ID kamu adalah: {}",
-        user.user_id
-    );
+    let user_id = user.user_id;
 
-    (StatusCode::OK, pesan)
+    (StatusCode::OK, Json(json!({ "id": user_id })))
+}
+
+pub async fn logout_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, String)> {
+    let auth_header = headers
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .filter(|h| h.starts_with("Bearer "))
+        .map(|h| h[7..].to_string());
+
+    let token = match auth_header {
+        Some(t) => t,
+        None => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Access Denied : token is missing".to_string(),
+            ));
+        }
+    };
+
+    let insert_result = sqlx::query("INSERT INTO token_blacklist (token) VALUES ($1)")
+        .bind(token)
+        .execute(&state.pool)
+        .await;
+
+    match insert_result {
+        Ok(_) => Ok((
+            StatusCode::OK,
+            Json(json!({
+                "message":format!("User {} Success logout user",user.user_id)
+            })),
+        )),
+        Err(e) => {
+            eprintln!("DB Error (Logout): {:?}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to logout".to_string(),
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use axum::{extract::State, http::StatusCode, Json};
+    use axum::{
+        extract::State,
+        http::StatusCode,
+        routing::{get, post},
+        Json, Router,
+    };
+
+    use tower::ServiceExt;
 
     use crate::{
-        handlers::user::{get_my_profile, login_user, register_user},
+        handlers::user::{get_my_profile, login_user, logout_user, register_user},
         model::user::{LoginRequest, RegisterRequest},
         AppState,
     };
@@ -345,6 +394,113 @@ mod tests {
             .unwrap();
         let body_text = String::from_utf8(body_bytes.to_vec()).unwrap();
 
-        assert!(body_text.contains("Selamat datang di area VIP!"));
+        assert!(body_text.contains("\"id\":"));
+    }
+
+    #[sqlx::test]
+    async fn test_get_my_profile_failure(pool: sqlx::PgPool) {
+        let state = AppState {
+            pool,
+            jwt_secret: "SECRET_KEY".to_string(),
+        };
+
+        use axum::{routing::get, Router};
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/api/user/me", get(get_my_profile))
+            .with_state(state);
+
+        let request = axum::http::Request::builder()
+            .uri("/api/user/me")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_text = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert_eq!(body_text, "Access Denied : token is missing")
+    }
+
+    #[sqlx::test]
+    async fn test_logout_user_and_blacklist(pool: sqlx::PgPool) {
+        let state = AppState {
+            pool,
+            jwt_secret: "SECRET_KEY".to_string(),
+        };
+
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let password = "SuperSecretPassword123!".to_string();
+        let email = format!("logouttest{}@test.com", time);
+
+        let reg_payload = RegisterRequest {
+            username: format!("out{}", time),
+            email: email.clone(),
+            password: password.clone(),
+            full_name: "Logout Tester".to_string(),
+        };
+        let _ = register_user(State(state.clone()), Json(reg_payload))
+            .await
+            .unwrap();
+
+        let login_payload = LoginRequest {
+            identifier: email,
+            password,
+        };
+        let (_, Json(body)) = login_user(State(state.clone()), Json(login_payload))
+            .await
+            .unwrap();
+        let token = body.token;
+
+        let app: Router = Router::new()
+            .route("/api/user/me", get(get_my_profile))
+            .route("/api/user/logout", post(logout_user))
+            .with_state(state);
+
+        let req_profile_before = axum::http::Request::builder()
+            .uri("/api/user/me")
+            .header("Authorization", format!("Bearer {}", token))
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res_profile_before = app.clone().oneshot(req_profile_before).await.unwrap();
+        assert_eq!(res_profile_before.status(), StatusCode::OK);
+
+        let req_logout = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/user/logout")
+            .header("Authorization", format!("Bearer {}", token))
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res_logout = app.clone().oneshot(req_logout).await.unwrap();
+        assert_eq!(res_logout.status(), StatusCode::OK);
+
+        let req_profile_after = axum::http::Request::builder()
+            .uri("/api/user/me")
+            .header("Authorization", format!("Bearer {}", token))
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res_profile_after = app.oneshot(req_profile_after).await.unwrap();
+
+        assert_eq!(res_profile_after.status(), StatusCode::UNAUTHORIZED);
+
+        let body_bytes = axum::body::to_bytes(res_profile_after.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_text = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert_eq!(
+            body_text,
+            "Access Denied : token has been revoked (logged out)"
+        );
     }
 }
