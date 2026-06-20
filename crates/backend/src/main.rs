@@ -4,18 +4,11 @@ mod middleware;
 mod model;
 mod routes;
 
-use axum::{
-    routing::{get, post},
-    serve, Router,
-};
+use axum::{routing::get, serve, Router};
 
 use sqlx::{Pool, Postgres};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
-
-use handlers::room::create_room;
-
-use crate::handlers::user::{get_my_profile, login_user, register_user};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -39,7 +32,6 @@ async fn main() {
     let app = Router::new()
         .route("/", get(|| async { "Midman Server is running" }))
         .nest("/api/v1", routes::create_router())
-        .route("/api/user/me", get(get_my_profile))
         .layer(cors)
         .with_state(state);
 
