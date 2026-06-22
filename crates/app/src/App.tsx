@@ -20,7 +20,7 @@ function App() {
       const data: RoomInfo = await response.json();
       setRoom(data);
     } catch (error) {
-      console.error("Gagal membuat room:", error);
+      console.error("Failed to create room:", error);
     } finally {
       setLoading(false);
     }
